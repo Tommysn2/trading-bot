@@ -47,7 +47,8 @@ railway variables set ANTHROPIC_API_KEY=YOUR_ANTHROPIC_KEY
 railway variables set SUPABASE_URL=YOUR_SUPABASE_URL
 railway variables set SUPABASE_KEY=YOUR_SUPABASE_KEY
 railway variables set T212_MODE=demo
-railway variables set T212_API_KEY=PASTE_YOUR_T212_KEY_HERE
+railway variables set T212_API_KEY=PASTE_YOUR_T212_API_KEY_HERE
+railway variables set T212_SECRET_KEY=PASTE_YOUR_T212_SECRET_KEY_HERE
 railway variables set TELEGRAM_BOT_TOKEN=PASTE_YOUR_TOKEN_HERE
 railway variables set TELEGRAM_CHAT_ID=PASTE_YOUR_CHAT_ID_HERE
 railway up
@@ -76,7 +77,8 @@ Once your Railway project is created, go to **Variables** tab and add:
 | `ANTHROPIC_API_KEY` | *(copy from your `.env` file)* |
 | `SUPABASE_URL` | *(copy from your `.env` file)* |
 | `SUPABASE_KEY` | *(copy from your `.env` file)* |
-| `T212_API_KEY` | *(from your Trading 212 app)* |
+| `T212_API_KEY` | *(from your Trading 212 app — API Key)* |
+| `T212_SECRET_KEY` | *(from your Trading 212 app — Secret Key)* |
 | `T212_MODE` | `demo` |
 | `TELEGRAM_BOT_TOKEN` | *(from @BotFather)* |
 | `TELEGRAM_CHAT_ID` | *(from getUpdates URL)* |

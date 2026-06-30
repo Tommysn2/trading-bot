@@ -1,6 +1,6 @@
-# Trading Bot — Push to GitHub
-# Run this once from Windows to upload all code to your GitHub repo.
-# Double-click this file or right-click → "Run with PowerShell"
+# Trading Bot — Push latest changes to GitHub
+# Run this whenever you want to sync local changes to the repo.
+# Railway auto-deploys when GitHub is updated.
 
 $ErrorActionPreference = "Stop"
 $repoPath = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -8,29 +8,28 @@ Set-Location $repoPath
 
 Write-Host "=== Trading Bot — GitHub Push ===" -ForegroundColor Cyan
 Write-Host "Folder: $repoPath"
+Write-Host ""
 
-# Remove any broken .git from previous attempts
-if (Test-Path ".git") {
-    Write-Host "Removing old .git folder..." -ForegroundColor Yellow
-    Remove-Item -Recurse -Force ".git"
+# Stage all changes
+git add -A
+
+# Check if there's anything to commit
+$status = git status --porcelain
+if (-not $status) {
+    Write-Host "Nothing to commit — already up to date." -ForegroundColor Green
+    Read-Host "Press Enter to close"
+    exit 0
 }
 
-# Init fresh repo
-git init
-git config user.email "tommysn2sm@gmail.com"
-git config user.name "Tommysn2"
-git branch -M main
-git remote add origin https://github.com/Tommysn2/trading-bot.git
-git add -A
-git commit -m "Initial commit — full trading bot with ICT PM session range module"
+# Commit with timestamp
+$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm"
+git commit -m "Update — $timestamp"
 
 Write-Host ""
 Write-Host "Pushing to GitHub..." -ForegroundColor Cyan
-Write-Host "(A browser window or credential popup may open — log in with your GitHub account)" -ForegroundColor Yellow
-Write-Host ""
-
-git push -u origin main
+git push
 
 Write-Host ""
-Write-Host "SUCCESS! Code is now at: https://github.com/Tommysn2/trading-bot" -ForegroundColor Green
+Write-Host "SUCCESS! Changes pushed to GitHub." -ForegroundColor Green
+Write-Host "Railway will auto-redeploy in ~30 seconds." -ForegroundColor Yellow
 Read-Host "Press Enter to close"

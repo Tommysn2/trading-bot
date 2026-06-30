@@ -135,7 +135,7 @@ total = len(results)
 print(f"Results: {passed}/{total} passed")
 
 if passed == total:
-    print("\n🚀 All systems go. Safe to deploy to VPS.")
+    print("\n🚀 All systems go. Safe to deploy to Railway.")
 else:
     failed = [name for name, ok in results if not ok]
     print(f"\n⚠️  Fix these before deploying: {', '.join(failed)}")

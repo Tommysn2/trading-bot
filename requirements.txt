@@ -9,13 +9,9 @@ pytz==2024.2
 # Database
 supabase==2.15.0
 
-# Telegram alerts
-python-telegram-bot==21.11.1
-
 # Data / Markov
 pandas==2.2.3
 numpy==2.2.1
-scikit-learn==1.6.1
 yfinance==0.2.54
 
 # Utilities

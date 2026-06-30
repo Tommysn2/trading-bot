@@ -29,7 +29,7 @@ if errorlevel 1 (
     echo SUCCESS! All dependencies installed.
     echo.
     echo Next steps:
-    echo  1. Fill in ALPACA and TELEGRAM values in .env
+    echo  1. Fill in T212, ANTHROPIC, SUPABASE and TELEGRAM values in .env
     echo  2. Run: python test_connections.py
 )
 

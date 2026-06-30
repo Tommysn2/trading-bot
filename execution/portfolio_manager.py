@@ -157,7 +157,6 @@ class PortfolioManager:
         account = self.alpaca.get_account()
         positions = self.alpaca.get_positions()
         regime = get_regime_signal()
-        dxy = get_dxy_weekly_trend_today()
 
         return {
             "type": "nightly_summary",
@@ -170,9 +169,3 @@ class PortfolioManager:
             "regime": regime.get("current_state"),
             "regime_signal": regime.get("signal"),
         }
-
-
-def dxy_weekly_trend_today():
-    """Simple wrapper to avoid circular import in nightly summary."""
-    from data.dxy_monitor import get_dxy_bias
-    return get_dxy_bias().get("note", "")
