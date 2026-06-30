@@ -1,0 +1,23 @@
+# Core
+anthropic==0.54.0
+requests==2.32.3
+beautifulsoup4==4.12.3
+python-dotenv==1.0.1
+schedule==1.2.2
+pytz==2024.2
+
+# Database
+supabase==2.15.0
+
+# Telegram alerts
+python-telegram-bot==21.11.1
+
+# Data / Markov
+pandas==2.2.3
+numpy==2.2.1
+scikit-learn==1.6.1
+yfinance==0.2.54
+
+# Utilities
+httpx==0.28.1
+tenacity==9.0.0
