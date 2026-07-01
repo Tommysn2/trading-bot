@@ -1,21 +1,82 @@
 """
 Markov Regime Detection — the quant hedge fund method.
 Classifies market as Bull / Bear / Sideways using a 20-day rolling return window.
-Builds a 3×3 transition matrix from SPY history.
-Signal = P(Bull tomorrow) − P(Bear tomorrow) → determines trade direction and size.
+Builds a 3x3 transition matrix from SPY history.
+Signal = P(Bull tomorrow) - P(Bear tomorrow) -> determines trade direction and size.
+
+Robust version: retries yfinance on failure, falls back to cached regime,
+falls back to a neutral sideways default so the bot never crashes.
 """
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from datetime import datetime
+import logging
+from datetime import datetime, timedelta
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from config.settings import (
     MARKOV_LOOKBACK_DAYS, MARKOV_BULL_THRESHOLD,
     MARKOV_BEAR_THRESHOLD, MARKOV_MARKET_TICKER
 )
 
+log = logging.getLogger(__name__)
+
 STATES = {"bull": 0, "sideways": 1, "bear": 2}
 STATE_NAMES = {0: "bull", 1: "sideways", 2: "bear"}
+
+# Default fallback when all data sources fail — neutral sideways
+_FALLBACK_REGIME = {
+    "current_state": "sideways",
+    "p_bull_tomorrow": 0.38,
+    "p_sideways_tomorrow": 0.34,
+    "p_bear_tomorrow": 0.28,
+    "signal": 0.10,
+    "direction": "long",
+    "conviction": "low",
+    "size_multiplier": 0.7,
+    "summary": (
+        "Market state: SIDEWAYS (fallback — live data unavailable). "
+        "Signal: +10% (Bull 38% - Bear 28%). "
+        "Conviction: low. Position size: 0.7x normal."
+    ),
+    "fallback": True,
+}
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=8),
+    retry=retry_if_exception_type(Exception),
+    reraise=True,
+)
+def _download_spy(ticker: str, period: str) -> pd.DataFrame:
+    """Download historical data with automatic retry on failure."""
+    df = yf.download(
+        ticker,
+        period=period,
+        interval="1d",
+        progress=False,
+        auto_adjust=True,
+        threads=False,
+    )
+    if df is None or df.empty:
+        raise ValueError(f"Empty dataframe returned for {ticker}")
+    return df
+
+
+def _try_download(ticker: str) -> pd.DataFrame:
+    """
+    Try multiple periods in descending order.
+    Gives Railway's network a few attempts before giving up.
+    """
+    for period in ("5y", "3y", "1y"):
+        try:
+            df = _download_spy(ticker, period)
+            log.info(f"[Markov] Downloaded {len(df)} rows for {ticker} (period={period})")
+            return df
+        except Exception as e:
+            log.warning(f"[Markov] Download failed ({period}): {e}")
+    raise ValueError(f"All download attempts failed for {ticker}")
 
 
 class MarkovRegime:
@@ -27,10 +88,7 @@ class MarkovRegime:
 
     def load(self, years: int = 5):
         """Load price history and build the transition matrix."""
-        df = yf.download(self.ticker, period=f"{years}y", interval="1d",
-                         progress=False, auto_adjust=True)
-        if df.empty:
-            raise ValueError(f"No data returned for {self.ticker}")
+        df = _try_download(self.ticker)
 
         closes = df["Close"].squeeze()
         self.history = closes
@@ -49,8 +107,8 @@ class MarkovRegime:
         """
         Returns the trading signal for today.
         Signal = P(Bull tomorrow) - P(Bear tomorrow)
-        Positive → go long (bigger = more conviction)
-        Negative → go short / avoid
+        Positive -> go long (bigger = more conviction)
+        Negative -> go short / avoid
         """
         if self.transition_matrix is None:
             self.load()
@@ -63,7 +121,6 @@ class MarkovRegime:
         p_bear = row[STATES["bear"]]
         signal = p_bull - p_bear
 
-        # Position size multiplier: scale between 0.5x and 1.5x based on conviction
         if signal > 0.4:
             size_multiplier = 1.5
             conviction = "high"
@@ -93,7 +150,8 @@ class MarkovRegime:
                 f"Market state: {self.current_state.upper()}. "
                 f"Signal: {signal:+.1%} (Bull {p_bull:.0%} - Bear {p_bear:.0%}). "
                 f"Conviction: {conviction}. Position size: {size_multiplier}x normal."
-            )
+            ),
+            "fallback": False,
         }
 
     def get_matrix_display(self) -> str:
@@ -101,7 +159,7 @@ class MarkovRegime:
         if self.transition_matrix is None:
             self.load()
         lines = ["Markov Transition Matrix (rows=today, cols=tomorrow):"]
-        lines.append(f"{'':12} {'→Bull':>8} {'→Side':>8} {'→Bear':>8}")
+        lines.append(f"{'':12} {'->Bull':>8} {'->Side':>8} {'->Bear':>8}")
         for from_state, idx in STATES.items():
             row = self.transition_matrix[idx]
             lines.append(
@@ -133,27 +191,45 @@ class MarkovRegime:
 
         # Normalise each row to sum to 1
         row_sums = matrix.sum(axis=1, keepdims=True)
-        row_sums[row_sums == 0] = 1  # avoid div by zero
+        row_sums[row_sums == 0] = 1
         return matrix / row_sums
 
 
 # ── Convenience function ─────────────────────────────────────
 
-_regime_cache = {}
+_regime_cache: dict = {}
+
 
 def get_regime_signal(ticker: str = None, force_refresh: bool = False) -> dict:
     """
     Cached convenience wrapper. Refreshes once per day.
+    Falls back to last known signal, then to a neutral default.
+    Never raises — always returns a usable dict.
     """
     global _regime_cache
     ticker = ticker or MARKOV_MARKET_TICKER
     today = datetime.now().date().isoformat()
 
+    # Return today's cached value if available
     if not force_refresh and ticker in _regime_cache and _regime_cache[ticker].get("date") == today:
         return _regime_cache[ticker]["signal"]
 
-    regime = MarkovRegime(ticker)
-    regime.load()
-    signal = regime.get_signal()
-    _regime_cache[ticker] = {"date": today, "signal": signal}
-    return signal
+    try:
+        regime = MarkovRegime(ticker)
+        regime.load()
+        signal = regime.get_signal()
+        _regime_cache[ticker] = {"date": today, "signal": signal}
+        log.info(f"[Markov] Regime: {signal['current_state'].upper()} | Signal: {signal['signal']:+.1%} | {signal['conviction']}")
+        return signal
+    except Exception as e:
+        log.error(f"[Markov] Failed to compute regime for {ticker}: {e}")
+
+        # Fall back to yesterday's cached signal if we have one
+        if ticker in _regime_cache:
+            stale = _regime_cache[ticker]["signal"]
+            log.warning(f"[Markov] Using stale cached signal from {_regime_cache[ticker]['date']}")
+            return {**stale, "fallback": True, "summary": "[CACHED] " + stale.get("summary", "")}
+
+        # Last resort: return neutral default so the bot keeps running
+        log.warning("[Markov] No cache available — using neutral fallback regime")
+        return _FALLBACK_REGIME
