@@ -157,7 +157,11 @@ def _check_timed_jobs():
 
 # ── Entry point ──────────────────────────────────────────────
 
-if __name__ == "__main__":
+def run_bot():
+    """
+    Main bot loop — runs forever.
+    Called directly (python scheduler/main_loop.py) or as a thread from dashboard/app.py.
+    """
     mode = "DEMO" if T212_MODE == "demo" else "LIVE"
     log.info(f"=== Trading Bot Starting ({mode} mode) ===")
 
@@ -182,3 +186,7 @@ if __name__ == "__main__":
         log.critical(f"Fatal error: {e}\n{traceback.format_exc()}")
         alert_error(str(e), context="main_loop_fatal")
         raise
+
+
+if __name__ == "__main__":
+    run_bot()

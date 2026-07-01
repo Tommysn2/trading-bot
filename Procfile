@@ -1,1 +1,1 @@
-worker: python scheduler/main_loop.py
+web: PYTHONPATH=/app python dashboard/app.py
