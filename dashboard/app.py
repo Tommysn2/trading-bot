@@ -11,9 +11,13 @@ import traceback
 from datetime import datetime
 import pytz
 from flask import Flask, jsonify
+from flask_cors import CORS
 
 log = logging.getLogger(__name__)
 app = Flask(__name__)
+
+# Allow the Lovable dashboard (and any other origin) to call our API
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 # ── Tavern HTML ───────────────────────────────────────────────
 
