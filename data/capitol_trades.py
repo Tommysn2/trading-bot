@@ -52,8 +52,6 @@ def fetch_recent_trades(days_back: int = 7) -> list[dict]:
 
             # Parse amount range (e.g. "$15,001 - $50,000" → use midpoint)
             amount = _parse_amount(amount_str)
-            if amount < CAPITOL_TRADES_MIN_AMOUNT:
-                continue
 
             # Only track buys from our watched politicians
             if tx_type.lower() not in ("purchase", "buy"):

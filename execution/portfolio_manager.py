@@ -4,7 +4,9 @@ Called by the scheduler. Gathers all signals, checks rules, fires decisions.
 """
 
 from data.trading212_client import Trading212Client as AlpacaClient  # same interface
-from data.capitol_trades import get_buy_candidates
+import data.capitol_trades as _ct
+import data.insider_trades as _it
+import data.ark_trades as _ark
 from data.forex_factory import is_no_trade_day
 from data.news_checker import check_ticker_news, check_macro_news
 from data.dxy_monitor import get_dxy_bias
@@ -89,8 +91,18 @@ class PortfolioManager:
         # TradingView technical context (market + candidates)
         tv_market = get_market_tv_context()
 
-        # Get Capitol Trades candidates and filter out earnings risk
-        candidates = get_buy_candidates()
+        # Gather buy candidates from all signal sources — deduplicated
+        ct_candidates = _ct.get_buy_candidates()          # Congressional trades
+        insider_candidates = _it.get_buy_candidates()     # SEC Form 4 executive buys
+        ark_candidates = _ark.get_buy_candidates()        # ARK Invest daily buys
+
+        seen: set = set()
+        candidates = []
+        for ticker in ct_candidates + insider_candidates + ark_candidates:
+            if ticker and ticker not in seen:
+                seen.add(ticker)
+                candidates.append(ticker)
+
         if candidates:
             safe_candidates, risky = filter_earnings_safe(candidates)
         else:
@@ -117,6 +129,11 @@ class PortfolioManager:
                 "cb_level": risk_engine.circuit_breaker_status()["level"],
             },
             "candidates": safe_candidates,
+            "candidate_sources": {
+                "congressional": ct_candidates,
+                "insider_form4": insider_candidates,
+                "ark_invest": ark_candidates,
+            },
             "news": news,
             "dxy": dxy,
             "macro": {

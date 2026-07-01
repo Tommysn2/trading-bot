@@ -43,49 +43,78 @@ _FALLBACK_REGIME = {
 }
 
 
-def _download_spy(ticker: str, period: str, timeout_secs: int = 10) -> pd.DataFrame:
+def _download_stooq(ticker: str, years: int = 3) -> pd.DataFrame:
     """
-    Download historical data with a hard wall-clock timeout.
-    yfinance can hang indefinitely on restricted networks (e.g. Railway),
-    so we run it in a thread and kill it after timeout_secs.
+    Download historical daily data from Stooq.com — free, no API key, no rate limits.
+    Stooq ticker format: SPY -> spy.us
     """
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+    import requests
+    from io import StringIO
+
+    stooq_symbol = ticker.lower() + ".us"
+    url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
+
+    resp = requests.get(url, timeout=15, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    })
+    resp.raise_for_status()
+
+    df = pd.read_csv(StringIO(resp.text), index_col="Date", parse_dates=True)
+    df = df.sort_index()
+
+    # Filter to requested years
+    cutoff = pd.Timestamp.now() - pd.DateOffset(years=years)
+    df = df[df.index >= cutoff]
+
+    if df.empty or len(df) < 30:
+        raise ValueError(f"Stooq returned insufficient data for {ticker}")
+
+    # Rename to match yfinance format
+    df = df.rename(columns={"Close": "Close", "Open": "Open", "High": "High",
+                             "Low": "Low", "Volume": "Volume"})
+    return df
+
+
+def _download_yfinance_fallback(ticker: str) -> pd.DataFrame:
+    """Fallback to yfinance with a hard thread timeout."""
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FT
 
     def _fetch():
-        return yf.download(
-            ticker,
-            period=period,
-            interval="1d",
-            progress=False,
-            auto_adjust=True,
-            threads=False,
-        )
+        return yf.download(ticker, period="1y", interval="1d",
+                           progress=False, auto_adjust=True, threads=False)
 
     with ThreadPoolExecutor(max_workers=1) as ex:
-        future = ex.submit(_fetch)
         try:
-            df = future.result(timeout=timeout_secs)
-        except FuturesTimeout:
-            raise ValueError(f"yfinance download timed out after {timeout_secs}s for {ticker}")
+            df = ex.submit(_fetch).result(timeout=12)
+        except FT:
+            raise ValueError(f"yfinance timed out for {ticker}")
 
     if df is None or df.empty:
-        raise ValueError(f"Empty dataframe returned for {ticker}")
+        raise ValueError(f"yfinance returned empty data for {ticker}")
     return df
 
 
 def _try_download(ticker: str) -> pd.DataFrame:
     """
-    Try multiple periods in descending order with a hard timeout each time.
-    Gives Railway's network a few short attempts before giving up.
+    Try Stooq first (no rate limits), fall back to yfinance.
     """
-    for period in ("3y", "1y", "6mo"):
-        try:
-            df = _download_spy(ticker, period, timeout_secs=8)
-            log.info(f"[Markov] Downloaded {len(df)} rows for {ticker} (period={period})")
-            return df
-        except Exception as e:
-            log.warning(f"[Markov] Download failed ({period}): {e}")
-    raise ValueError(f"All download attempts failed for {ticker}")
+    # Primary: Stooq (free, reliable, no rate limits on Railway)
+    try:
+        df = _download_stooq(ticker, years=3)
+        log.info(f"[Markov] Stooq: {len(df)} rows for {ticker}")
+        return df
+    except Exception as e:
+        log.warning(f"[Markov] Stooq failed: {e} — trying yfinance")
+
+    # Fallback: yfinance with timeout
+    try:
+        df = _download_yfinance_fallback(ticker)
+        log.info(f"[Markov] yfinance fallback: {len(df)} rows for {ticker}")
+        return df
+    except Exception as e:
+        log.warning(f"[Markov] yfinance also failed: {e}")
+
+    raise ValueError(f"All data sources failed for {ticker}")
 
 
 class MarkovRegime:
