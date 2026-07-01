@@ -8,12 +8,16 @@ How it works:
   3. A sweep = stop-hunt by the algorithm before reversal — high-probability setup
 
 Rules:
-  - PM sweep BELOW the low in a BULL regime → strong buy signal (sell-side liquidity taken)
-  - PM sweep ABOVE the high in a BEAR regime → strong sell signal (buy-side liquidity taken)
-  - No sweep in first 30 min → PM range not the active driver today
+  - PM sweep BELOW the low in a BULL regime -> strong buy signal (sell-side liquidity taken)
+  - PM sweep ABOVE the high in a BEAR regime -> strong sell signal (buy-side liquidity taken)
+  - No sweep in first 30 min -> PM range not the active driver today
+
+Uses Stooq 5-minute bars (no rate limits, no API key needed).
 """
 
-import yfinance as yf
+import requests
+import pandas as pd
+from io import StringIO
 import pytz
 from datetime import datetime, date, timedelta, time
 from config.settings import (
@@ -23,40 +27,55 @@ from config.settings import (
 
 ET = pytz.timezone("America/New_York")
 
+_STOOQ_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+
+def _fetch_stooq_5min(ticker: str) -> pd.DataFrame:
+    """Fetch 5-minute bars from Stooq. Returns DataFrame with DatetimeIndex in ET."""
+    stooq_symbol = ticker.lower() + ".us"
+    url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=5"
+    resp = requests.get(url, timeout=12, headers=_STOOQ_HEADERS)
+    resp.raise_for_status()
+
+    df = pd.read_csv(StringIO(resp.text), parse_dates=["Date"])
+    if df.empty:
+        raise ValueError("Empty response from Stooq")
+
+    if "Time" in df.columns:
+        df["datetime"] = pd.to_datetime(
+            df["Date"].astype(str) + " " + df["Time"].astype(str)
+        )
+    else:
+        df["datetime"] = pd.to_datetime(df["Date"])
+
+    df = df.set_index("datetime").sort_index()
+
+    if df.index.tzinfo is None:
+        df.index = df.index.tz_localize("America/New_York")
+    else:
+        df.index = df.index.tz_convert(ET)
+
+    return df
+
 
 def get_pm_session_range(ticker: str = None, for_date: date = None) -> dict:
     """
     Returns the PM session high and low for a given date (default: yesterday).
-    Uses 1-minute RTH bars filtered to 1:30–4:00 PM ET.
+    Uses 5-minute bars filtered to 1:30-4:00 PM ET.
     """
     ticker = ticker or MARKOV_MARKET_TICKER
     if for_date is None:
         for_date = _last_trading_day()
 
     try:
-        # Fetch 2 days of 1-min data to ensure we capture the target date
-        df = yf.download(
-            ticker,
-            period="5d",
-            interval="1m",
-            progress=False,
-            auto_adjust=True
-        )
-        if df.empty:
-            return _unavailable("No price data returned")
-
-        # Localise index to ET
-        if df.index.tzinfo is None:
-            df.index = df.index.tz_localize("UTC").tz_convert(ET)
-        else:
-            df.index = df.index.tz_convert(ET)
+        df = _fetch_stooq_5min(ticker)
 
         # Filter to target date only
         day_data = df[df.index.date == for_date]
         if day_data.empty:
             return _unavailable(f"No data for {for_date}")
 
-        # Filter to PM session window (1:30 PM – 4:00 PM ET)
+        # Filter to PM session window (1:30 PM - 4:00 PM ET)
         pm_start = _t(PM_SESSION_START_ET)
         pm_end   = _t(PM_SESSION_END_ET)
         pm_data = day_data[
@@ -77,7 +96,7 @@ def get_pm_session_range(ticker: str = None, for_date: date = None) -> dict:
             "pm_high": round(pm_high, 4),
             "pm_low":  round(pm_low, 4),
             "pm_range": round(pm_high - pm_low, 4),
-            "source": "yfinance 1m RTH",
+            "source": "stooq 5m",
         }
 
     except Exception as e:
@@ -88,13 +107,6 @@ def check_pm_sweep(regime_signal: str = "sideways") -> dict:
     """
     Called shortly after the 9:30 AM open (within the first 30 minutes).
     Checks whether the current price has swept the previous day's PM high or low.
-
-    Returns a signal dict:
-        - swept_low: True if price dipped below PM low (bullish sweep)
-        - swept_high: True if price broke above PM high (bearish sweep)
-        - signal: "bullish_sweep" | "bearish_sweep" | "no_sweep" | "unavailable"
-        - bias: "bullish" | "bearish" | "neutral"
-        - note: human-readable description
     """
     now_et = datetime.now(ET)
 
@@ -105,7 +117,10 @@ def check_pm_sweep(regime_signal: str = "sideways") -> dict:
         return {
             "signal": "outside_window",
             "bias": "neutral",
-            "note": f"PM sweep check only valid 9:30–{window_end.strftime('%H:%M')} ET. Current: {now_et.strftime('%H:%M')}",
+            "note": (
+                f"PM sweep check only valid 9:30-{window_end.strftime('%H:%M')} ET. "
+                f"Current: {now_et.strftime('%H:%M')}"
+            ),
         }
 
     # Get yesterday's PM range
@@ -113,13 +128,13 @@ def check_pm_sweep(regime_signal: str = "sideways") -> dict:
     if not pm["available"]:
         return {"signal": "unavailable", "bias": "neutral", "note": pm.get("reason", "PM range unavailable")}
 
-    # Get current price (last 5-min bar)
+    # Get current price (last bar from Stooq)
     try:
-        df = yf.download(MARKOV_MARKET_TICKER, period="1d", interval="5m", progress=False, auto_adjust=True)
+        df = _fetch_stooq_5min(MARKOV_MARKET_TICKER)
         if df.empty:
             return {"signal": "unavailable", "bias": "neutral", "note": "Cannot fetch current price"}
-        current_low  = float(df["Low"].iloc[-1])
-        current_high = float(df["High"].iloc[-1])
+        current_low   = float(df["Low"].iloc[-1])
+        current_high  = float(df["High"].iloc[-1])
         current_price = float(df["Close"].iloc[-1])
     except Exception as e:
         return {"signal": "unavailable", "bias": "neutral", "note": str(e)}
@@ -134,28 +149,28 @@ def check_pm_sweep(regime_signal: str = "sideways") -> dict:
         signal = "bullish_sweep"
         bias   = "bullish"
         note   = (
-            f"Price swept BELOW PM low ({pm_low:.2f}) → sell-side liquidity taken. "
-            f"Bull regime → ICT buy signal. Watch for reversal back above PM low."
+            f"Price swept BELOW PM low ({pm_low:.2f}) -> sell-side liquidity taken. "
+            f"Bull regime -> ICT buy signal. Watch for reversal back above PM low."
         )
     elif swept_high and regime_signal in ("bear", "sideways"):
         signal = "bearish_sweep"
         bias   = "bearish"
         note   = (
-            f"Price swept ABOVE PM high ({pm_high:.2f}) → buy-side liquidity taken. "
-            f"Bear regime → ICT sell signal. Watch for reversal back below PM high."
+            f"Price swept ABOVE PM high ({pm_high:.2f}) -> buy-side liquidity taken. "
+            f"Bear regime -> ICT sell signal. Watch for reversal back below PM high."
         )
     elif swept_low or swept_high:
         signal = "sweep_against_regime"
         bias   = "neutral"
         note   = (
             f"PM level swept but against current regime ({regime_signal}). "
-            f"Lower probability — skip or wait for clearer setup."
+            f"Lower probability - skip or wait for clearer setup."
         )
     else:
         signal = "no_sweep"
         bias   = "neutral"
         note   = (
-            f"No PM sweep yet. PM range: {pm_low:.2f}–{pm_high:.2f}. "
+            f"No PM sweep yet. PM range: {pm_low:.2f}-{pm_high:.2f}. "
             f"Current price: {current_price:.2f}. Watching..."
         )
 
@@ -173,16 +188,12 @@ def check_pm_sweep(regime_signal: str = "sideways") -> dict:
 
 def get_pm_range_for_context() -> dict:
     """
-    Returns a combined dict for the decision engine context:
-    previous day's PM range + today's sweep status.
+    Returns a combined dict for the decision engine context.
     Called once per trade decision cycle.
     """
     pm_range = get_pm_session_range()
     if not pm_range["available"]:
-        return {
-            "available": False,
-            "note": "PM session range unavailable.",
-        }
+        return {"available": False, "note": "PM session range unavailable."}
 
     return {
         "available": True,
@@ -198,7 +209,7 @@ def get_pm_range_for_context() -> dict:
     }
 
 
-# ── Helpers ──────────────────────────────────────────────────
+# -- Helpers ------------------------------------------------------------------
 
 def _t(time_str: str) -> time:
     h, m = map(int, time_str.split(":"))
@@ -210,7 +221,7 @@ def _last_trading_day() -> date:
     today = date.today()
     offset = 1
     candidate = today - timedelta(days=offset)
-    while candidate.weekday() >= 5:  # Saturday=5, Sunday=6
+    while candidate.weekday() >= 5:
         offset += 1
         candidate = today - timedelta(days=offset)
     return candidate
