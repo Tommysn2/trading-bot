@@ -43,22 +43,31 @@ _FALLBACK_REGIME = {
 }
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=8),
-    retry=retry_if_exception_type(Exception),
-    reraise=True,
-)
-def _download_spy(ticker: str, period: str) -> pd.DataFrame:
-    """Download historical data with automatic retry on failure."""
-    df = yf.download(
-        ticker,
-        period=period,
-        interval="1d",
-        progress=False,
-        auto_adjust=True,
-        threads=False,
-    )
+def _download_spy(ticker: str, period: str, timeout_secs: int = 10) -> pd.DataFrame:
+    """
+    Download historical data with a hard wall-clock timeout.
+    yfinance can hang indefinitely on restricted networks (e.g. Railway),
+    so we run it in a thread and kill it after timeout_secs.
+    """
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
+    def _fetch():
+        return yf.download(
+            ticker,
+            period=period,
+            interval="1d",
+            progress=False,
+            auto_adjust=True,
+            threads=False,
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        future = ex.submit(_fetch)
+        try:
+            df = future.result(timeout=timeout_secs)
+        except FuturesTimeout:
+            raise ValueError(f"yfinance download timed out after {timeout_secs}s for {ticker}")
+
     if df is None or df.empty:
         raise ValueError(f"Empty dataframe returned for {ticker}")
     return df
@@ -66,12 +75,12 @@ def _download_spy(ticker: str, period: str) -> pd.DataFrame:
 
 def _try_download(ticker: str) -> pd.DataFrame:
     """
-    Try multiple periods in descending order.
-    Gives Railway's network a few attempts before giving up.
+    Try multiple periods in descending order with a hard timeout each time.
+    Gives Railway's network a few short attempts before giving up.
     """
-    for period in ("5y", "3y", "1y"):
+    for period in ("3y", "1y", "6mo"):
         try:
-            df = _download_spy(ticker, period)
+            df = _download_spy(ticker, period, timeout_secs=8)
             log.info(f"[Markov] Downloaded {len(df)} rows for {ticker} (period={period})")
             return df
         except Exception as e:

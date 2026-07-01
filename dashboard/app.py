@@ -608,43 +608,70 @@ def index():
 
 @app.route("/api/status")
 def api_status():
-    try:
-        from data.trading212_client import Trading212Client
-        from brain.markov_regime import get_regime_signal
-        from brain.session_filter import get_session_context
+    """
+    Returns bot status. Each data source is fetched independently so
+    a failure in one (e.g. yfinance regime) never blocks the others.
+    """
+    from data.trading212_client import Trading212Client
+    from brain.markov_regime import get_regime_signal, _FALLBACK_REGIME
+    from brain.session_filter import get_session_context
 
+    # ── Account + positions ──────────────────────────────────
+    try:
         t212      = Trading212Client()
         account   = t212.get_account()
         positions = t212.get_positions()
-        regime    = get_regime_signal()
-        session   = get_session_context()
-
-        return jsonify({
-            "ok":          True,
-            "mode":        os.getenv("T212_MODE", "demo").upper(),
-            "market_open": t212.is_market_open(),
-            "timestamp":   datetime.now(pytz.UTC).isoformat(),
-            "account":     account,
-            "positions":   positions,
-            "regime": {
-                "state":      regime.get("current_state"),
-                "signal":     regime.get("signal"),
-                "conviction": regime.get("conviction"),
-                "p_bull":     regime.get("p_bull_tomorrow"),
-                "p_bear":     regime.get("p_bear_tomorrow"),
-                "summary":    regime.get("summary"),
-            },
-            "session": {
-                "time_et":      session.get("time_et"),
-                "day":          session.get("day"),
-                "can_trade":    session.get("can_open_new_trade"),
-                "trade_reason": session.get("trade_window_reason"),
-                "in_kill_zone": session.get("in_kill_zone"),
-            },
-        })
+        market_open = t212.is_market_open()
     except Exception as e:
-        log.error(f"[Dashboard] /api/status: {e}")
-        return jsonify({"ok": False, "error": str(e)}), 500
+        log.error(f"[Dashboard] T212 error: {e}")
+        account   = {"equity": 0, "cash": 0, "daily_pnl": 0, "daily_pnl_pct": 0}
+        positions = []
+        market_open = False
+
+    # ── Markov regime (non-blocking: 30s hard timeout) ───────
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FT
+    regime = _FALLBACK_REGIME
+    try:
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            f = ex.submit(get_regime_signal)
+            regime = f.result(timeout=30)
+    except FT:
+        log.warning("[Dashboard] Regime timed out — using fallback")
+    except Exception as e:
+        log.warning(f"[Dashboard] Regime error — using fallback: {e}")
+
+    # ── Session context (pure Python, instant) ───────────────
+    try:
+        session = get_session_context()
+    except Exception as e:
+        log.error(f"[Dashboard] Session error: {e}")
+        session = {"time_et": "--:--", "day": "Unknown", "can_open_new_trade": False,
+                   "trade_window_reason": "Error", "in_kill_zone": False}
+
+    return jsonify({
+        "ok":          True,
+        "mode":        os.getenv("T212_MODE", "demo").upper(),
+        "market_open": market_open,
+        "timestamp":   datetime.now(pytz.UTC).isoformat(),
+        "account":     account,
+        "positions":   positions,
+        "regime": {
+            "state":      regime.get("current_state"),
+            "signal":     regime.get("signal"),
+            "conviction": regime.get("conviction"),
+            "p_bull":     regime.get("p_bull_tomorrow"),
+            "p_bear":     regime.get("p_bear_tomorrow"),
+            "summary":    regime.get("summary"),
+            "fallback":   regime.get("fallback", False),
+        },
+        "session": {
+            "time_et":      session.get("time_et"),
+            "day":          session.get("day"),
+            "can_trade":    session.get("can_open_new_trade"),
+            "trade_reason": session.get("trade_window_reason"),
+            "in_kill_zone": session.get("in_kill_zone"),
+        },
+    })
 
 
 @app.route("/api/trades")
