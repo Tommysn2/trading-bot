@@ -198,4 +198,6 @@ def get_candidate_tv_signals(candidates: list[str]) -> dict:
     """
     if not candidates:
         return {}
-    return get_tv_signals(candidates[:8])   # limit to 8 to stay within rate limits
+    # TradingView screener accepts all tickers in a single POST — no per-payload rate limit.
+    # Removed the :8 cap so the full watchlist (21 stocks) gets signals each cycle.
+    return get_tv_signals(candidates)

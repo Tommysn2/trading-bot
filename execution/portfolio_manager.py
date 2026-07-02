@@ -29,8 +29,8 @@ class PortfolioManager:
     def run_position_check(self) -> dict:
         """
         Runs every 5 minutes.
-        1. Check circuit breaker → tighten stops if needed.
-        2. Monitor trailing stops (Alpaca handles automatically via GTC orders).
+        1. Check circuit breaker -> tighten stops if needed.
+        2. Monitor trailing stops (T212 GTC stop orders ratcheted by position_check).
         Returns a status dict.
         """
         account = self.alpaca.get_account()
@@ -54,14 +54,14 @@ class PortfolioManager:
     def run_trade_decision(self) -> dict:
         """
         Runs every 30 minutes during market hours.
-        Full decision cycle: gather all signals → ask Claude → execute if warranted.
+        Full decision cycle: gather all signals -> ask Claude -> execute if warranted.
         Returns the full decision + execution result.
         """
         account = self.alpaca.get_account()
         positions = self.alpaca.get_positions()
         risk_engine = RiskEngine(account, positions)
 
-        # ── Early exits ─────────────────────────────────────
+        # -- Early exits -------------------------------------------------
 
         # Market closed?
         if not self.alpaca.is_market_open():
@@ -78,26 +78,26 @@ class PortfolioManager:
             result = self.executor.friday_weekend_decision(risk_engine, regime)
             return {"type": "friday_review", **result}
 
-        # ── Gather signals ───────────────────────────────────
+        # -- Gather signals -----------------------------------------------
 
         session = get_session_context()
         regime = get_regime_signal()
         dxy = get_dxy_bias()
         macro_news = check_macro_news(hours_back=2)
 
-        # PM session range — previous day's 1:30–4:00 PM high/low + today's sweep check
+        # PM session range -- previous day's 1:30-4:00 PM high/low + today's sweep check
         pm_range = get_pm_range_for_context()
         pm_sweep = check_pm_sweep(regime_signal=regime.get("current_state", "sideways"))
 
-        # TradingView technical context (market + candidates)
+        # TradingView technical context for the broad market (SPY)
         tv_market = get_market_tv_context()
 
-        # Gather buy candidates from all signal sources — deduplicated
+        # Gather buy candidates from all three signal sources -- deduplicated
         ct_candidates      = _ct.get_buy_candidates()      # Congressional trades
         insider_candidates = _it.get_buy_candidates()      # SEC Form 4 executive buys
         ark_candidates     = _ark.get_buy_candidates()     # ARK Invest daily buys
 
-        # Build candidate list: signal sources first, then permanent watchlist
+        # Build signal candidate list (dedup across sources)
         seen: set = set()
         signal_candidates = []
         for ticker in ct_candidates + insider_candidates + ark_candidates:
@@ -105,20 +105,23 @@ class PortfolioManager:
                 seen.add(ticker)
                 signal_candidates.append(ticker)
 
-        # Always include watchlist — bot never idles with empty candidates
+        # Always append full watchlist -- bot never idles with empty candidates
         watchlist_additions = [t for t in WATCHLIST if t not in seen]
 
         all_candidates = signal_candidates + watchlist_additions
 
-        # Filter out earnings risk (with 5-second timeout per ticker)
-        safe_candidates, risky = filter_earnings_safe(all_candidates)
+        # Earnings check: only run on signal-flagged stocks.
+        # Watchlist stocks are trusted blue-chips -- no earnings check needed.
+        # This avoids up to 105 seconds of yfinance timeouts (21 stocks x 5s each).
+        safe_signals, risky = filter_earnings_safe(signal_candidates)
+        safe_candidates = safe_signals + watchlist_additions
 
-        # Get news for each candidate (limit to 5 to save API calls)
+        # News for first 5 safe candidates (API call budget)
         news = {}
         for ticker in safe_candidates[:5]:
             news[ticker] = check_ticker_news(ticker, hours_back=4)
 
-        # TradingView per-ticker signals for candidates
+        # TradingView per-ticker signals -- full candidate list in one POST request
         tv_signals = get_candidate_tv_signals(safe_candidates)
 
         # Risk check for this cycle
@@ -156,11 +159,11 @@ class PortfolioManager:
             "account": account,
         }
 
-        # ── Claude makes the decision ────────────────────────
+        # -- Claude makes the decision ------------------------------------
 
         decision = make_decision(context)
 
-        # ── Execute if action isn't HOLD ─────────────────────
+        # -- Execute if action is not HOLD --------------------------------
 
         execution = self.executor.execute(decision, risk_engine)
 
