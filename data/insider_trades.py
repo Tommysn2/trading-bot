@@ -1,12 +1,11 @@
 """
-Insider Trades monitor — scrapes OpenInsider for SEC Form 4 filings.
+Insider Trades monitor -- scrapes OpenInsider for SEC Form 4 filings.
 Focuses on clustered C-suite buys (CEO, CFO, COO, Chairman).
 
 Logic: if multiple insiders at the SAME company buy on the same day, that's
-a high-conviction signal — insiders only buy when they believe the stock is
-undervalued. We only care about PURCHASES (not option exercises or sales).
+a high-conviction signal. We only care about PURCHASES (not option exercises or sales).
 
-Source: https://openinsider.com — free, no login, no API key.
+Source: https://openinsider.com -- free, no login, no API key.
 """
 
 import requests
@@ -21,7 +20,7 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
 
-# Only copy these roles — not every employee option grant
+# Only copy these roles -- not every employee option grant
 EXECUTIVE_ROLES = {
     "CEO", "CFO", "COO", "President", "Chairman",
     "Chief Executive", "Chief Financial", "Chief Operating",
@@ -30,9 +29,9 @@ EXECUTIVE_ROLES = {
 # Minimum $ value for an insider buy to count as meaningful
 MIN_INSIDER_BUY = 25_000   # $25k+ = skin in the game
 
-# URL: cluster buys past 7 days, sorted by filing date, top 100 rows
+# FIX: HTTPS not HTTP
 OPENINSIDER_URL = (
-    "http://openinsider.com/screener?"
+    "https://openinsider.com/screener?"
     "s=&o=&pl=&ph=&ll=&lh=&fd=7&fdr=&td=0&tdr=&fdlyl=&fdlyh=&daysago=&"
     "xp=1&xs=1&vl=25&vh=&ocl=&och=&sic1=-1&sicl=100&sich=9999&grp=0&"
     "nfl=&nfh=&nil=&nih=&nol=&noh=&v2l=&v2h=&oc2l=&oc2h=&sortcol=0&cnt=100&page=1"
@@ -119,12 +118,11 @@ def fetch_insider_buys(days_back: int = 7) -> list[dict]:
     return trades
 
 
-def get_clustered_buys(days_back: int = 7, min_insiders: int = 2) -> list[dict]:
+def get_clustered_buys(trades: list[dict], min_insiders: int = 2) -> list[dict]:
     """
     Returns tickers where 2+ executives bought on the same day.
-    Clustered buys = highest conviction insider signal.
+    Accepts already-fetched trades to avoid double HTTP requests.
     """
-    trades = fetch_insider_buys(days_back)
     if not trades:
         return []
 
@@ -157,13 +155,15 @@ def get_clustered_buys(days_back: int = 7, min_insiders: int = 2) -> list[dict]:
 
 def get_buy_candidates() -> list[str]:
     """
-    Returns deduplicated list of tickers with clustered insider buys.
-    Drop-in replacement for capitol_trades.get_buy_candidates().
+    Returns deduplicated list of tickers with clustered insider buys or large solo buys.
+    FIX: fetch_insider_buys() called ONCE and reused -- avoids double HTTP request.
     """
     try:
-        clusters = get_clustered_buys(days_back=7, min_insiders=2)
-        # Also include single large-value buys (CEO spending $500k+)
-        singles = [t for t in fetch_insider_buys(days_back=7) if t["value"] >= 500_000]
+        # Single fetch -- shared by both clustered and singles logic
+        all_trades = fetch_insider_buys(days_back=7)
+
+        clusters = get_clustered_buys(all_trades, min_insiders=2)
+        singles  = [t for t in all_trades if t["value"] >= 500_000]
 
         seen = set()
         candidates = []

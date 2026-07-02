@@ -7,6 +7,9 @@ Sources: Google News RSS (free), briefing.com headlines
 """
 
 import requests
+import logging
+
+log = logging.getLogger(__name__)
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from urllib.parse import quote
@@ -98,7 +101,7 @@ def _fetch_google_news(query: str, hours_back: int = 4) -> list[str]:
 
         return headlines
     except Exception as e:
-        print(f"[News] Error fetching news for '{query}': {e}")
+        log.warning(f"[News] Error fetching news for '{query}': {e}")
         return []
 
 

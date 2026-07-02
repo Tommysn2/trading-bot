@@ -7,7 +7,7 @@ Logic: if ARK buys a stock across MULTIPLE funds on the same day,
 it's a high-conviction signal. Single-fund buys with large share counts
 also qualify.
 
-Source: ark-funds.com — public, no API key needed.
+Source: ark-funds.com -- public, no API key needed.
 """
 
 import requests
@@ -23,16 +23,7 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
 
-# ARK ETF daily holdings CSV URLs
-ARK_FUND_URLS = {
-    "ARKK": "https://ark-funds.com/wp-content/uploads/funds-etf-csv/ARK_INNOVATION_ETF_ARKK_HOLDINGS.csv",
-    "ARKQ": "https://ark-funds.com/wp-content/uploads/funds-etf-csv/ARK_AUTONOMOUS_TECHNOLOGY_&_ROBOTICS_ETF_ARKQ_HOLDINGS.csv",
-    "ARKG": "https://ark-funds.com/wp-content/uploads/funds-etf-csv/ARK_GENOMIC_REVOLUTION_ETF_ARKG_HOLDINGS.csv",
-    "ARKW": "https://ark-funds.com/wp-content/uploads/funds-etf-csv/ARK_NEXT_GENERATION_INTERNET_ETF_ARKW_HOLDINGS.csv",
-    "ARKX": "https://ark-funds.com/wp-content/uploads/funds-etf-csv/ARK_SPACE_EXPLORATION_&_INNOVATION_ETF_ARKX_HOLDINGS.csv",
-}
-
-# Fallback: ARK also publishes trade activity directly
+# ARK daily trade activity CSV (updated every evening after market close)
 ARK_TRADES_URL = "https://ark-funds.com/wp-content/uploads/funds-etf-csv/ARK_TRADES.csv"
 
 # Minimum share count for a buy to be meaningful (avoids noise from tiny rebalances)
@@ -42,10 +33,10 @@ MIN_ARK_SHARES = 10_000
 def fetch_ark_daily_trades() -> list[dict]:
     """
     Fetch ARK's most recent published trades.
-    Returns list of buys from today or yesterday.
+    Returns list of buys from the past 3 days (file updated nightly).
     """
     trades = []
-    cutoff = datetime.now() - timedelta(days=3)   # trades file updated nightly
+    cutoff = datetime.now() - timedelta(days=3)
 
     try:
         resp = requests.get(ARK_TRADES_URL, headers=HEADERS, timeout=15)
@@ -92,22 +83,19 @@ def fetch_ark_daily_trades() -> list[dict]:
         log.info(f"[ARK] Fetched {len(trades)} ARK buys from trades CSV")
 
     except Exception as e:
-        log.warning(f"[ARK] Primary trades CSV failed: {e} — trying holdings diff")
-        # Holdings diff approach (less reliable, skipping for now)
+        log.warning(f"[ARK] Trades CSV fetch failed: {e}")
 
     return trades
 
 
-def get_multi_fund_buys(min_funds: int = 2) -> list[dict]:
+def get_multi_fund_buys(trades: list[dict], min_funds: int = 2) -> list[dict]:
     """
-    Returns tickers ARK bought across 2+ different funds today.
-    Multi-fund buys = highest conviction ARK signal.
+    Returns tickers ARK bought across 2+ different funds.
+    Accepts already-fetched trades to avoid a second HTTP request.
     """
-    trades = fetch_ark_daily_trades()
     if not trades:
         return []
 
-    # Group by (ticker, date)
     by_ticker: dict = defaultdict(list)
     for t in trades:
         by_ticker[t["ticker"]].append(t)
@@ -135,14 +123,15 @@ def get_multi_fund_buys(min_funds: int = 2) -> list[dict]:
 def get_buy_candidates() -> list[str]:
     """
     Returns tickers ARK is buying today (multi-fund preferred, large single buys included).
-    Drop-in for use in portfolio_manager.
+    FIX: fetch_ark_daily_trades() called ONCE and reused -- avoids double HTTP request.
     """
     try:
+        # Single fetch -- shared by multi-fund and big-singles logic
         trades = fetch_ark_daily_trades()
         if not trades:
             return []
 
-        multi_fund = {r["ticker"] for r in get_multi_fund_buys(min_funds=2)}
+        multi_fund = {r["ticker"] for r in get_multi_fund_buys(trades, min_funds=2)}
 
         # Also include any very large single-fund buy (500k+ shares)
         big_singles = {t["ticker"] for t in trades if t["shares"] >= 500_000}

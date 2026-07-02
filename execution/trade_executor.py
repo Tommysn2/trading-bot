@@ -1,5 +1,5 @@
 """
-Trade Executor — converts decisions from the brain into live Alpaca orders.
+Trade Executor -- converts decisions from the brain into live T212 orders.
 All orders go through the risk engine first. Logs every action.
 """
 
@@ -34,12 +34,12 @@ class TradeExecutor:
         }
 
         if action == "HOLD" or not ticker:
-            result["message"] = "HOLD — no trade executed."
+            result["message"] = "HOLD -- no trade executed."
             return result
 
         try:
             if action == "BUY":
-                # Final risk check — get how much we're allowed to trade
+                # Final risk check -- get how much we're allowed to trade
                 can_open, reason, trade_size = risk_engine.can_open_position(
                     size_multiplier=min(confidence * 1.5, 1.5)  # high confidence = bigger position
                 )
@@ -53,7 +53,7 @@ class TradeExecutor:
                 result["order"] = order
                 result["executed"] = True
                 result["trade_size"] = trade_size
-                result["message"] = f"BUY {ticker} £{trade_size:.0f} — {reasoning}"
+                result["message"] = f"BUY {ticker} £{trade_size:.0f} -- {reasoning}"
 
                 # Set trailing stop immediately after fill
                 time.sleep(2)  # brief wait for order to process
@@ -64,13 +64,13 @@ class TradeExecutor:
                 # Confirm we actually hold this position
                 position = self.alpaca.get_position(ticker)
                 if not position:
-                    result["message"] = f"SELL {ticker} — position not found, nothing to sell."
+                    result["message"] = f"SELL {ticker} -- position not found, nothing to sell."
                     return result
 
                 order = self.alpaca.sell(ticker)
                 result["order"] = order
                 result["executed"] = True
-                result["message"] = f"SELL {ticker} — {reasoning}"
+                result["message"] = f"SELL {ticker} -- {reasoning}"
 
         except Exception as e:
             result["error"] = str(e)
@@ -82,25 +82,39 @@ class TradeExecutor:
         """
         Called every 5 minutes when positions are open.
         If circuit breaker is in defensive mode, tightens all trailing stops.
+
+        FIX: cancel_all_orders() is called ONCE before the loop, not inside it.
+        Previously it was inside the loop which meant stop orders set for the first
+        position would get cancelled when processing the second position.
         """
         cb = risk_engine.circuit_breaker_status()
         if not cb.get("tighten_stops"):
             return []
 
         positions = self.alpaca.get_positions()
+        if not positions:
+            return []
+
         results = []
+
+        # Cancel ALL existing stop orders once before replacing them
+        try:
+            self.alpaca.cancel_all_orders()
+        except Exception as e:
+            results.append({"action": "cancel_all_failed", "error": str(e)})
+
+        defensive_stop_pct = cb.get("defensive_stop_pct", TRAILING_STOP_PCT / 2)
+
         for pos in positions:
             try:
-                # Cancel existing stop orders and replace with tighter stop
-                self.alpaca.cancel_all_orders()
                 new_stop = self.alpaca.set_trailing_stop(
                     pos["symbol"],
-                    trail_percent=cb.get("defensive_stop_pct", TRAILING_STOP_PCT / 2) * 100
+                    trail_percent=defensive_stop_pct * 100
                 )
                 results.append({
                     "ticker": pos["symbol"],
                     "action": "stop_tightened",
-                    "new_stop_pct": cb.get("defensive_stop_pct"),
+                    "new_stop_pct": defensive_stop_pct,
                     "order": new_stop
                 })
             except Exception as e:
@@ -113,9 +127,9 @@ class TradeExecutor:
         Called at 3:30 PM ET on Fridays.
         Decision: hold positions over weekend, or close all to cash?
         Rules:
-          - Bear regime → close all to cash
-          - Defensive/Halt circuit breaker → close all
-          - Bull regime + no major news risk → hold
+          - Bear regime -> close all to cash
+          - Defensive/Halt circuit breaker -> close all
+          - Bull regime + no major news risk -> hold
         """
         positions = self.alpaca.get_positions()
         if not positions:
@@ -127,13 +141,13 @@ class TradeExecutor:
         # Close if bear regime
         if regime_signal.get("current_state") == "bear":
             should_close = True
-            reason = "Bear market regime detected — closing all positions for weekend."
+            reason = "Bear market regime detected -- closing all positions for weekend."
 
         # Close if circuit breaker active
         cb = risk_engine.circuit_breaker_status()
         if cb["level"] in ("defensive", "halt"):
             should_close = True
-            reason = f"Circuit breaker {cb['level']} — closing all positions for weekend."
+            reason = f"Circuit breaker {cb['level']} -- closing all positions for weekend."
 
         if should_close:
             closed = []
@@ -152,5 +166,5 @@ class TradeExecutor:
             return {
                 "action": "holding",
                 "tickers": [p["symbol"] for p in positions],
-                "reason": f"Bull/sideways regime ({regime_signal.get('current_state')}) — holding over weekend."
+                "reason": f"Bull/sideways regime ({regime_signal.get('current_state')}) -- holding over weekend."
             }
