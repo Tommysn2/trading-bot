@@ -10,7 +10,7 @@ load_dotenv()
 
 # ── Trading 212 (UK broker, commission-free) ─────────────────
 T212_API_KEY    = os.environ["T212_API_KEY"]
-T212_SECRET_KEY = os.environ["T212_SECRET_KEY"]
+T212_SECRET_KEY = os.getenv("T212_SECRET_KEY", "")  # Not used — T212 only needs API key
 T212_MODE       = os.getenv("T212_MODE", "demo")   # "demo" or "live"
 
 # ── Claude ───────────────────────────────────────────────────

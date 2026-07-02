@@ -1,5 +1,5 @@
 """
-ICT PM Session Range — previous day's high/low between 1:30–4:00 PM ET (RTH only).
+ICT PM Session Range — previous day's high/low between 1:30-4:00 PM ET (RTH only).
 
 How it works:
   1. Each day at close, record the PM session high/low for SPY (market proxy)
@@ -7,11 +7,8 @@ How it works:
      above PM high (bearish) within the first 30 minutes
   3. A sweep = stop-hunt by the algorithm before reversal — high-probability setup
 
-Rules:
-  - PM sweep BELOW the low in a BULL regime -> strong buy signal (sell-side liquidity taken)
-  - PM sweep ABOVE the high in a BEAR regime -> strong sell signal (buy-side liquidity taken)
-  - No sweep in first 30 min -> PM range not the active driver today
-
+Fix: portfolio_manager passes the already-fetched pm_range into check_pm_sweep()
+so Stooq is only called once for session range data (not 3x).
 Uses Stooq 5-minute bars (no rate limits, no API key needed).
 """
 
@@ -70,12 +67,10 @@ def get_pm_session_range(ticker: str = None, for_date: date = None) -> dict:
     try:
         df = _fetch_stooq_5min(ticker)
 
-        # Filter to target date only
         day_data = df[df.index.date == for_date]
         if day_data.empty:
             return _unavailable(f"No data for {for_date}")
 
-        # Filter to PM session window (1:30 PM - 4:00 PM ET)
         pm_start = _t(PM_SESSION_START_ET)
         pm_end   = _t(PM_SESSION_END_ET)
         pm_data = day_data[
@@ -91,22 +86,25 @@ def get_pm_session_range(ticker: str = None, for_date: date = None) -> dict:
 
         return {
             "available": True,
-            "date": for_date.isoformat(),
-            "ticker": ticker,
-            "pm_high": round(pm_high, 4),
-            "pm_low":  round(pm_low, 4),
-            "pm_range": round(pm_high - pm_low, 4),
-            "source": "stooq 5m",
+            "date":      for_date.isoformat(),
+            "ticker":    ticker,
+            "pm_high":   round(pm_high, 4),
+            "pm_low":    round(pm_low, 4),
+            "pm_range":  round(pm_high - pm_low, 4),
+            "source":    "stooq 5m",
         }
 
     except Exception as e:
         return _unavailable(str(e))
 
 
-def check_pm_sweep(regime_signal: str = "sideways") -> dict:
+def check_pm_sweep(regime_signal: str = "sideways", pm_range: dict = None) -> dict:
     """
     Called shortly after the 9:30 AM open (within the first 30 minutes).
     Checks whether the current price has swept the previous day's PM high or low.
+
+    pm_range: if already fetched by get_pm_range_for_context(), pass it here
+              to avoid a redundant Stooq download (saves 1-2 network calls).
     """
     now_et = datetime.now(ET)
 
@@ -116,19 +114,27 @@ def check_pm_sweep(regime_signal: str = "sideways") -> dict:
     if now_et < market_open_today or now_et > window_end:
         return {
             "signal": "outside_window",
-            "bias": "neutral",
-            "note": (
+            "bias":   "neutral",
+            "note":   (
                 f"PM sweep check only valid 9:30-{window_end.strftime('%H:%M')} ET. "
                 f"Current: {now_et.strftime('%H:%M')}"
             ),
         }
 
-    # Get yesterday's PM range
-    pm = get_pm_session_range()
-    if not pm["available"]:
-        return {"signal": "unavailable", "bias": "neutral", "note": pm.get("reason", "PM range unavailable")}
+    # Use passed pm_range if available — avoids re-downloading Stooq data
+    if pm_range is None or not pm_range.get("available"):
+        pm = get_pm_session_range()
+    else:
+        pm = {
+            "available": True,
+            "pm_high":   pm_range["pm_high"],
+            "pm_low":    pm_range["pm_low"],
+        }
 
-    # Get current price (last bar from Stooq)
+    if not pm.get("available"):
+        return {"signal": "unavailable", "bias": "neutral", "note": "PM range unavailable"}
+
+    # Get current price from Stooq (only call left in this function)
     try:
         df = _fetch_stooq_5min(MARKOV_MARKET_TICKER)
         if df.empty:
@@ -164,7 +170,7 @@ def check_pm_sweep(regime_signal: str = "sideways") -> dict:
         bias   = "neutral"
         note   = (
             f"PM level swept but against current regime ({regime_signal}). "
-            f"Lower probability - skip or wait for clearer setup."
+            f"Lower probability — skip or wait for clearer setup."
         )
     else:
         signal = "no_sweep"
@@ -175,21 +181,22 @@ def check_pm_sweep(regime_signal: str = "sideways") -> dict:
         )
 
     return {
-        "signal": signal,
-        "bias": bias,
-        "pm_high": pm_high,
-        "pm_low": pm_low,
+        "signal":       signal,
+        "bias":         bias,
+        "pm_high":      pm_high,
+        "pm_low":       pm_low,
         "current_price": current_price,
-        "swept_low": swept_low,
-        "swept_high": swept_high,
-        "note": note,
+        "swept_low":    swept_low,
+        "swept_high":   swept_high,
+        "note":         note,
     }
 
 
 def get_pm_range_for_context() -> dict:
     """
-    Returns a combined dict for the decision engine context.
-    Called once per trade decision cycle.
+    Returns PM range dict for the decision engine context.
+    Called once per trade decision cycle. Result is passed to check_pm_sweep()
+    to avoid duplicate Stooq downloads.
     """
     pm_range = get_pm_session_range()
     if not pm_range["available"]:
@@ -197,10 +204,10 @@ def get_pm_range_for_context() -> dict:
 
     return {
         "available": True,
-        "pm_high": pm_range["pm_high"],
-        "pm_low": pm_range["pm_low"],
-        "pm_range": pm_range["pm_range"],
-        "date": pm_range["date"],
+        "pm_high":   pm_range["pm_high"],
+        "pm_low":    pm_range["pm_low"],
+        "pm_range":  pm_range["pm_range"],
+        "date":      pm_range["date"],
         "note": (
             f"Previous PM range ({pm_range['date']}): "
             f"High {pm_range['pm_high']:.2f} / Low {pm_range['pm_low']:.2f} "
@@ -230,7 +237,7 @@ def _last_trading_day() -> date:
 def _unavailable(reason: str) -> dict:
     return {
         "available": False,
-        "reason": reason,
-        "pm_high": None,
-        "pm_low": None,
+        "reason":    reason,
+        "pm_high":   None,
+        "pm_low":    None,
     }

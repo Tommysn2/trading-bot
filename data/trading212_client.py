@@ -3,9 +3,10 @@ Trading 212 API wrapper — portfolio state, order placement, position monitorin
 UK-based broker, commission-free, FCA regulated.
 
 API docs: https://trading212community.github.io/api-documentation/
+Auth: Authorization: {api_key}  (raw key — NOT Basic auth, NOT Bearer)
 
-Demo account:  set T212_MODE=demo  in .env  → demo.trading212.com
-Live account:  set T212_MODE=live  in .env  → live.trading212.com
+Demo account:  set T212_MODE=demo  in .env  -> demo.trading212.com
+Live account:  set T212_MODE=live  in .env  -> live.trading212.com
 """
 
 import requests
@@ -15,11 +16,10 @@ import pytz
 import time
 import logging
 from datetime import datetime, time as dtime
-from config.settings import T212_API_KEY, T212_SECRET_KEY, T212_MODE
+from config.settings import T212_API_KEY, T212_MODE
 
 log = logging.getLogger(__name__)
 
-# ── API base URL ────────────────────────────────────────────
 BASE_URL = (
     "https://demo.trading212.com/api/v0"
     if T212_MODE == "demo"
@@ -44,8 +44,9 @@ class Trading212Client:
 
     def __init__(self):
         self.session = requests.Session()
-        self.session.auth = (T212_API_KEY, T212_SECRET_KEY)
+        # T212 API uses raw API key in Authorization header — NOT Basic auth
         self.session.headers.update({
+            "Authorization": T212_API_KEY,
             "Content-Type": "application/json",
         })
 
@@ -55,7 +56,8 @@ class Trading212Client:
         for attempt in range(4):
             resp = self.session.request(method, url, timeout=10, **kwargs)
             if resp.status_code == 429:
-                wait = 2 ** attempt  # 1s, 2s, 4s, 8s
+                wait = 2 ** attempt   # 1s, 2s, 4s, 8s
+                log.warning(f"[T212] Rate limited — retrying in {wait}s (attempt {attempt+1}/4)")
                 time.sleep(wait)
                 continue
             resp.raise_for_status()
@@ -72,26 +74,20 @@ class Trading212Client:
     def _delete(self, path: str) -> None:
         self._request("DELETE", path)
 
-    # ── Portfolio ────────────────────────────────────────────
+    # -- Portfolio -------------------------------------------------------
 
     def get_account(self) -> dict:
         """Returns account info: equity, cash, daily P&L."""
         cash = self._get("/equity/account/cash")
-        # T212 cash endpoint fields:
-        # free = uninvested cash, invested = in positions, ppl = unrealised P&L
-        # total = cash + invested + ppl  (total account value)
-        free      = float(cash.get("free", 0))
-        invested  = float(cash.get("invested", 0))
-        ppl       = float(cash.get("ppl", 0))
-        total     = float(cash.get("total", free + invested + ppl))
-
-        # Daily P&L approximation: T212 doesn't expose yesterday's equity directly,
-        # so we use the running unrealised P&L as a proxy.
+        free     = float(cash.get("free", 0))
+        invested = float(cash.get("invested", 0))
+        ppl      = float(cash.get("ppl", 0))
+        total    = float(cash.get("total", free + invested + ppl))
         return {
             "equity":        total,
             "cash":          free,
             "buying_power":  free,
-            "last_equity":   total - ppl,   # approximate
+            "last_equity":   total - ppl,
             "daily_pnl":     ppl,
             "daily_pnl_pct": ppl / max(total - ppl, 1),
         }
@@ -101,47 +97,43 @@ class Trading212Client:
         portfolio = self._get("/equity/portfolio")
         positions = []
         for p in portfolio:
-            qty         = float(p.get("quantity", 0))
-            avg_price   = float(p.get("averagePrice", 0))
-            cur_price   = float(p.get("currentPrice", avg_price))
-            ppl         = float(p.get("ppl", 0))
-            cost_basis  = qty * avg_price
-            ticker_raw  = p.get("ticker", "")
-            # Strip T212 suffix to get standard symbol (AAPL_US_EQ → AAPL)
+            qty        = float(p.get("quantity", 0))
+            avg_price  = float(p.get("averagePrice", 0))
+            cur_price  = float(p.get("currentPrice", avg_price))
+            ppl        = float(p.get("ppl", 0))
+            cost_basis = qty * avg_price
+            ticker_raw = p.get("ticker", "")
             symbol = ticker_raw.split("_")[0] if "_" in ticker_raw else ticker_raw
-
             positions.append({
-                "symbol":            symbol,
-                "t212_ticker":       ticker_raw,
-                "qty":               qty,
-                "avg_entry_price":   avg_price,
-                "current_price":     cur_price,
-                "market_value":      qty * cur_price,
-                "unrealized_pnl":    ppl,
+                "symbol":             symbol,
+                "t212_ticker":        ticker_raw,
+                "qty":                qty,
+                "avg_entry_price":    avg_price,
+                "current_price":      cur_price,
+                "market_value":       qty * cur_price,
+                "unrealized_pnl":     ppl,
                 "unrealized_pnl_pct": ppl / max(cost_basis, 0.01),
-                "side":              "long",
+                "side":               "long",
             })
         return positions
 
     def get_position(self, symbol: str) -> dict | None:
         """Returns a single position by symbol, or None if not held."""
-        positions = self.get_positions()
-        for p in positions:
+        for p in self.get_positions():
             if p["symbol"].upper() == symbol.upper():
                 return p
         return None
 
-    # ── Orders ──────────────────────────────────────────────
+    # -- Orders ----------------------------------------------------------
 
     def buy(self, symbol: str, notional: float) -> dict:
         """
         Buy a stock by notional value (e.g. notional=500 = buy £500 worth).
-        Calculates share count from current price via yfinance.
+        Calculates share count from Stooq last-close price.
         """
-        # Get current price to calculate quantity
         price = self._current_price(symbol)
         if price <= 0:
-            raise ValueError(f"Could not get price for {symbol}")
+            raise ValueError(f"Could not get price for {symbol} — cannot size order")
 
         qty = round(notional / price, 4)
         t212_ticker = _t212_ticker(symbol)
@@ -150,6 +142,7 @@ class Trading212Client:
             "ticker":   t212_ticker,
             "quantity": qty,
         })
+        log.info(f"[T212] BUY {symbol}: {qty} shares @ ~£{price:.2f} (notional £{notional:.0f})")
         return {
             "order_id": order.get("id", "unknown"),
             "symbol":   symbol,
@@ -160,20 +153,20 @@ class Trading212Client:
 
     def sell(self, symbol: str, qty: float = None) -> dict:
         """
-        Sell a position. If qty is None, closes the full position.
-        T212 uses DELETE /equity/positions/{ticker} to close fully.
+        Sell a position. If qty is None, closes the full position via DELETE.
         """
         t212_ticker = _t212_ticker(symbol)
 
         if qty is None:
-            # Close entire position
             self._delete(f"/equity/positions/{t212_ticker}")
+            log.info(f"[T212] SELL (full close) {symbol}")
             return {"symbol": symbol, "action": "full_close", "status": "submitted"}
 
         order = self._post("/equity/orders/market", {
             "ticker":   t212_ticker,
-            "quantity": -abs(qty),   # negative = sell in T212 API
+            "quantity": -abs(qty),   # negative quantity = sell in T212 API
         })
+        log.info(f"[T212] SELL {symbol}: {qty} shares")
         return {
             "order_id": order.get("id", "unknown"),
             "symbol":   symbol,
@@ -183,9 +176,9 @@ class Trading212Client:
 
     def set_trailing_stop(self, symbol: str, trail_percent: float) -> dict | None:
         """
-        Place a stop-loss order at (current_price × (1 - trail_percent/100)).
+        Place a stop-loss order at (current_price * (1 - trail_percent/100)).
         T212 doesn't support native trailing stops, so we place a fixed stop
-        and the position_check loop will ratchet it upward as price rises.
+        and position_check tightens it as price rises.
         """
         position = self.get_position(symbol)
         if not position:
@@ -202,14 +195,16 @@ class Trading212Client:
                 "stopPrice":    stop_price,
                 "timeValidity": "GTC",
             })
+            log.info(f"[T212] Stop set for {symbol} at £{stop_price:.2f} ({trail_percent:.0f}% trail)")
             return {
-                "order_id":     order.get("id"),
-                "symbol":       symbol,
-                "stop_price":   stop_price,
+                "order_id":      order.get("id"),
+                "symbol":        symbol,
+                "stop_price":    stop_price,
                 "trail_percent": trail_percent,
             }
         except Exception as e:
-            # Stop order may not be available on demo — log but don't crash
+            # Stop orders may not be available on demo accounts — log but don't crash
+            log.warning(f"[T212] Could not set stop for {symbol}: {e}")
             return {"symbol": symbol, "stop_price": stop_price, "note": str(e)}
 
     def cancel_all_orders(self) -> None:
@@ -224,9 +219,9 @@ class Trading212Client:
         except Exception:
             pass
 
-    # ── Price data ──────────────────────────────────────────
+    # -- Price data ------------------------------------------------------
 
-    def get_bars(self, symbol: str, days: int = 30, timeframe=None):
+    def get_bars(self, symbol: str, days: int = 30, timeframe=None) -> pd.DataFrame:
         """Get daily OHLCV bars from Stooq (free, no rate limits)."""
         try:
             url = f"https://stooq.com/q/d/l/?s={symbol.lower()}.us&i=d"
@@ -239,24 +234,18 @@ class Trading212Client:
             return pd.DataFrame()
 
     def is_market_open(self) -> bool:
-        """
-        Returns True if NYSE is currently open (9:30–16:00 ET, Mon–Fri).
-        T212 doesn't have a clock endpoint, so we derive from time.
-        """
+        """Returns True if NYSE is currently open (9:30-16:00 ET, Mon-Fri)."""
         now = datetime.now(ET)
-        if now.weekday() >= 5:   # Saturday or Sunday
+        if now.weekday() >= 5:
             return False
-        market_open  = dtime(9, 30)
-        market_close = dtime(16, 0)
-        return market_open <= now.time() <= market_close
+        return dtime(9, 30) <= now.time() < dtime(16, 0)
 
-    # ── Internal helpers ─────────────────────────────────────
+    # -- Internal helpers ------------------------------------------------
 
     def _current_price(self, symbol: str) -> float:
         """
-        Fetch latest close price from Stooq (free, no rate limits).
+        Fetch latest close price from Stooq.
         Used to calculate share quantity for notional-value market orders.
-        Stooq daily data is accurate enough for order sizing purposes.
         """
         try:
             url = f"https://stooq.com/q/d/l/?s={symbol.lower()}.us&i=d"
