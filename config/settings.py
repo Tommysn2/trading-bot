@@ -59,8 +59,28 @@ MARKOV_BEAR_THRESHOLD  = -0.05     # -5% = bear state
 MARKOV_MARKET_TICKER   = "SPY"     # Reference market for regime detection
 
 # ── Capitol Trades ───────────────────────────────────────────
-CAPITOL_TRADES_URL     = "https://www.capitoltrades.com/trades"
-CAPITOL_TRADES_MIN_AMOUNT = 15000  # Only copy trades above this value
+CAPITOL_TRADES_URL        = "https://www.capitoltrades.com/trades"
+CAPITOL_TRADES_MIN_AMOUNT = 0      # Track ALL politician trades (no minimum)
+
+# ── Permanent Watchlist ───────────────────────────────────────
+# Evaluated every 30 minutes via TradingView signals.
+# Bot always has stocks to consider — never idles waiting for signals.
+WATCHLIST = [
+    # Mega-cap tech
+    "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META",
+    # Financials (NYSE)
+    "JPM", "BAC", "GS",
+    # Consumer & Retail
+    "COST", "WMT", "HD",
+    # Healthcare
+    "UNH", "JNJ",
+    # Energy
+    "XOM", "CVX",
+    # Broad market ETFs
+    "QQQ", "SPY", "IWM",
+    # High-momentum favourites
+    "TSLA", "AMD",
+]
 
 # ── News sources ─────────────────────────────────────────────
 NEWS_TWITTER_HANDLES   = ["DeItaone", "FinancialJuice"]

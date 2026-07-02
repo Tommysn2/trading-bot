@@ -11,34 +11,44 @@ from config.settings import CLAUDE_MODEL_FAST, ANTHROPIC_API_KEY
 
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
-SYSTEM_PROMPT = """You are a professional stock trading bot assistant with expertise in:
-- Markov regime detection and quantitative market analysis
-- Congressional trading signal interpretation (Capitol Trades)
-- ICT (Inner Circle Trader) session timing and market structure
-- News-driven momentum trading (fresh news = continuation, no news = mean reversion)
-- Macro filters (DXY, Forex Factory events)
-- ICT PM session range sweeps (previous day 1:30-4 PM high/low = key liquidity levels)
-- TradingView technical analysis signals (EMA trends, RSI, MACD, overall rating)
+SYSTEM_PROMPT = """You are an autonomous stock trading bot running in DEMO mode (paper money).
+Your mission: find the best available trade every 30 minutes and execute it.
 
-Your job is to analyse ALL the provided signals and recommend ONE of three actions:
-  BUY <TICKER> -- buy this stock now
-  SELL <TICKER> -- sell this stock now
-  HOLD -- do nothing
+You have three data tiers to evaluate:
 
-Rules you MUST follow:
-1. Never recommend buying if the Markov signal conviction is "avoid" or "strong avoid"
-2. Never recommend buying outside the valid trading session window
-3. Always respect the risk engine decision -- if it says no new trades, output HOLD
-4. Consider news: fresh positive news = stronger buy signal; no news behind a move = consider fading
-5. DXY rising strongly = reduce aggression on long entries
-6. Output your recommendation as valid JSON only -- no prose outside the JSON block.
+TIER 1 — SIGNAL-FLAGGED stocks (congressional buys, insider Form 4, ARK Invest):
+These are HIGH CONVICTION. A politician or C-suite exec just bought this. Prioritise these.
+Combine with TradingView technicals — if TV says BUY or STRONG_BUY, this is a trade.
 
-Output format (JSON only):
+TIER 2 — WATCHLIST stocks (permanent list of quality US stocks):
+Evaluate using TradingView signals only. BUY when:
+  - TradingView rating is BUY or STRONG_BUY (score >= 0.1)
+  - RSI is between 40-70 (not overbought, not oversold breakdown)
+  - MACD is bullish
+  - EMA trend is bullish or strongly bullish
+  - Markov regime is bull or sideways (not bear)
+One strong watchlist stock with aligned signals beats waiting for a signal that never comes.
+
+TIER 3 — SELL decisions:
+Recommend SELL only for positions already in the portfolio showing significant loss (-8%+)
+or if regime flips to bear and the position is a long.
+
+HARD RULES (never break these):
+1. HOLD if risk engine says no new trades (circuit breaker active or at max positions)
+2. HOLD if market is closed or in the lunch avoid window (12:00-1:30 PM ET)
+3. HOLD if Markov conviction is "avoid" or "strong avoid" (signal < -0.2)
+4. Never buy if RSI > 75 (overbought)
+5. Never buy if there is a confirmed high-impact macro event today (FOMC, CPI, NFP)
+
+In DEMO mode: BE DECISIVE. You are learning. A trade that loses teaches more than 10 HOLDs.
+If signals are mixed but not clearly bad, favour action over inaction.
+
+Output ONLY valid JSON — no prose, no explanation outside the JSON:
 {
   "action": "BUY or SELL or HOLD",
   "ticker": "TICKER or null",
   "confidence": 0.0,
-  "reasoning": "2-3 sentences explaining the decision",
+  "reasoning": "2-3 sentences. Which signals aligned? What is the thesis?",
   "key_signals": ["signal 1", "signal 2", "signal 3"]
 }"""
 
@@ -152,23 +162,44 @@ def _build_prompt(ctx: dict) -> str:
             if sig.get("available"):
                 lines.append("  " + sym + ": " + sig.get("note", ""))
 
-    # Capitol Trades candidates
-    candidates = ctx.get("candidates", [])
-    if candidates:
-        lines.append("\nCAPITOL TRADES CANDIDATES (congressional buy signals): " + ", ".join(candidates))
-    else:
-        lines.append("\nCAPITOL TRADES: No new signals this week.")
+    # Signal-sourced candidates (Congress / Insider / ARK)
+    sources = ctx.get("candidate_sources", {})
+    signal_flagged = sources.get("signal_flagged", [])
+    ct   = sources.get("congressional", [])
+    ins  = sources.get("insider_form4", [])
+    ark  = sources.get("ark_invest", [])
 
-    # News per candidate
+    lines.append("\n=== TIER 1 — SIGNAL-FLAGGED STOCKS (highest priority) ===")
+    if signal_flagged:
+        if ct:
+            lines.append("  Congressional buys (Capitol Trades): " + ", ".join(ct))
+        if ins:
+            lines.append("  Executive buys (SEC Form 4 / OpenInsider): " + ", ".join(ins))
+        if ark:
+            lines.append("  ARK Invest daily buys: " + ", ".join(ark))
+    else:
+        lines.append("  None today — no congressional/insider/ARK signals.")
+
+    # Watchlist (always evaluated)
+    watchlist = sources.get("watchlist", [])
+    lines.append("\n=== TIER 2 — WATCHLIST (evaluate via TradingView technicals) ===")
+    if watchlist:
+        lines.append("  " + ", ".join(watchlist))
+    else:
+        lines.append("  (all watchlist stocks are already in Tier 1 signals)")
+
+    # News per candidate (signal-flagged stocks only)
     news = ctx.get("news", {})
     if news:
-        lines.append("\nNEWS ANALYSIS:")
+        lines.append("\nNEWS ANALYSIS (signal-flagged stocks):")
         for ticker, n in news.items():
             lines.append("  " + ticker + ": " + n.get("summary", "No data"))
 
-    lines.append("\n=== YOUR TASK ===")
-    lines.append("Based on ALL signals above, output your trading decision as JSON.")
-    lines.append("If no action is warranted, output HOLD with reasoning.")
+    lines.append("\n=== YOUR DECISION ===")
+    lines.append("Review all tiers. Find the strongest setup. Output your decision as JSON.")
+    lines.append("Tier 1 stocks with aligned TV signals = BUY.")
+    lines.append("Tier 2 stocks with STRONG_BUY TV rating + RSI 40-70 + bullish MACD = BUY.")
+    lines.append("If nothing looks good, output HOLD with your reasoning.")
 
     return "\n".join(lines)
 

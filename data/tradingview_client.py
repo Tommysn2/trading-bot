@@ -41,9 +41,20 @@ TV_INDICATORS = [
 
 def _tv_symbol(ticker: str) -> str:
     """Convert AAPL → NASDAQ:AAPL for the TradingView screener."""
-    # Most US tech stocks are on NASDAQ; SPY/broad market on NYSE ARCA
-    if ticker in ("SPY", "QQQ", "IWM", "DIA", "GLD", "TLT"):
+    # ETFs trade on AMEX (NYSE Arca)
+    _AMEX = {"SPY", "QQQ", "IWM", "DIA", "GLD", "TLT", "XLF", "XLE",
+             "XLK", "XLV", "ARKK", "ARKG", "ARKQ", "ARKW"}
+    # Large-cap NYSE stocks (financials, industrials, energy, consumer)
+    _NYSE = {"JPM", "BAC", "GS", "MS", "C", "WFC", "BRK.B",
+             "XOM", "CVX", "COP", "BP", "SLB",
+             "JNJ", "UNH", "PFE", "MRK", "ABT",
+             "WMT", "HD", "MCD", "KO", "PEP", "PG", "NKE",
+             "BA", "CAT", "HON", "GE", "MMM", "UPS", "FDX",
+             "T", "VZ", "DIS", "BRK", "BLK", "AXP"}
+    if ticker in _AMEX:
         return f"AMEX:{ticker}"
+    if ticker in _NYSE:
+        return f"NYSE:{ticker}"
     return f"NASDAQ:{ticker}"
 
 

@@ -9,11 +9,15 @@ Live account:  set T212_MODE=live  in .env  → live.trading212.com
 """
 
 import requests
-import yfinance as yf
+import pandas as pd
+from io import StringIO
 import pytz
 import time
+import logging
 from datetime import datetime, time as dtime
 from config.settings import T212_API_KEY, T212_SECRET_KEY, T212_MODE
+
+log = logging.getLogger(__name__)
 
 # ── API base URL ────────────────────────────────────────────
 BASE_URL = (
@@ -223,10 +227,16 @@ class Trading212Client:
     # ── Price data ──────────────────────────────────────────
 
     def get_bars(self, symbol: str, days: int = 30, timeframe=None):
-        """Get daily OHLCV bars via yfinance (same data, no extra API cost)."""
-        df = yf.download(symbol, period=f"{days + 10}d", interval="1d",
-                         progress=False, auto_adjust=True)
-        return df.tail(days)
+        """Get daily OHLCV bars from Stooq (free, no rate limits)."""
+        try:
+            url = f"https://stooq.com/q/d/l/?s={symbol.lower()}.us&i=d"
+            resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            df = pd.read_csv(StringIO(resp.text), index_col="Date", parse_dates=True)
+            return df.sort_index().tail(days)
+        except Exception as e:
+            log.warning(f"[T212] get_bars failed for {symbol}: {e}")
+            return pd.DataFrame()
 
     def is_market_open(self) -> bool:
         """
@@ -243,11 +253,21 @@ class Trading212Client:
     # ── Internal helpers ─────────────────────────────────────
 
     def _current_price(self, symbol: str) -> float:
-        """Fetch latest price from yfinance (free, accurate for US stocks)."""
+        """
+        Fetch latest close price from Stooq (free, no rate limits).
+        Used to calculate share quantity for notional-value market orders.
+        Stooq daily data is accurate enough for order sizing purposes.
+        """
         try:
-            ticker = yf.Ticker(symbol)
-            info = ticker.fast_info
-            price = getattr(info, "last_price", None) or getattr(info, "regularMarketPrice", 0)
-            return float(price) if price else 0.0
-        except Exception:
+            url = f"https://stooq.com/q/d/l/?s={symbol.lower()}.us&i=d"
+            resp = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            df = pd.read_csv(StringIO(resp.text))
+            if df.empty or "Close" not in df.columns:
+                return 0.0
+            price = float(df["Close"].iloc[-1])
+            log.debug(f"[T212] Price for {symbol}: ${price:.2f} (Stooq)")
+            return price
+        except Exception as e:
+            log.warning(f"[T212] _current_price failed for {symbol}: {e}")
             return 0.0

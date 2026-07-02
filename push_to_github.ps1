@@ -13,18 +13,16 @@ Write-Host ""
 # Stage all changes
 git add -A
 
-# Check if there's anything to commit
+# Commit any new local changes (skip if nothing to commit)
 $status = git status --porcelain
-if (-not $status) {
-    Write-Host "Nothing to commit -- already up to date." -ForegroundColor Green
-    Read-Host "Press Enter to close"
-    exit 0
+if ($status) {
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm"
+    git commit -m "Update - $timestamp"
+} else {
+    Write-Host "Nothing new to commit." -ForegroundColor Yellow
 }
 
-# Commit with timestamp
-$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm"
-git commit -m "Update - $timestamp"
-
+# Always push -- commits made by Claude in the background also need pushing
 Write-Host ""
 Write-Host "Pushing to GitHub..." -ForegroundColor Cyan
 git push
